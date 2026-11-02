@@ -1,0 +1,93 @@
+import { expect, test } from "@playwright/test";
+import { wav } from "../fixtures";
+const settings = { success: true, configured: true, status: "connected", model: "gemini-3.5-transcribe" };
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/settings", route => route.fulfill({ json: settings }));
+});
+test("real local API serves safe settings and enforces origin and key validation", async ({ page }) => {
+  const response = await page.request.get("/api/settings");
+  expect(response.status()).toBe(200);
+  const body = await response.json();
+  expect(Object.keys(body).sort()).toEqual(["configured", "model", "status", "success"]);
+  expect(body.model).toBe(settings.model);
+  const invalid = await page.request.post("/api/settings", { headers: { Origin: "http://127.0.0.1:3100" }, data: { apiKey: "" } });
+  expect(invalid.status()).toBe(400);
+  const foreign = await page.request.post("/api/settings", { headers: { Origin: "https://foreign.example" }, data: { apiKey: "short" } });
+  expect(foreign.status()).toBe(403);
+});
+test("workspace, settings, keyboard, API key visibility and mobile layout", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Words from your audio." })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Transcribe audio", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  const input = page.getByLabel("Gemini API key", { exact: true });
+  const longKey = `AQ.${"test".repeat(100)}.token+/=_-`;
+  await input.fill(longKey);
+  await expect(input).toHaveValue(longKey);
+  await expect(input).toHaveAttribute("type", "password");
+  await page.getByRole("button", { name: "Show API key" }).click();
+  await expect(input).toHaveAttribute("type", "text");
+  await page.getByRole("button", { name: "Hide API key" }).click();
+  await page.getByRole("button", { name: "Save API key" }).click();
+  await expect(input).toHaveValue("");
+  await expect(page.getByText("API key saved securely.", { exact: false })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("workspace.png"), fullPage: true });
+});
+test("uploads, edits, copies, downloads, and preserves the editor when audio is removed", async ({ page, context, browserName }) => {
+  await page.route("**/api/transcribe", route => route.fulfill({ json: { success: true, transcript: "Hello from the recording.\nA second line.", model: settings.model } }));
+  await page.goto("/");
+  await page.getByLabel("Choose audio file").setInputFiles({ name: "meeting.wav", mimeType: "audio/wav", buffer: wav() });
+  await expect(page.getByRole("heading", { name: "meeting.wav" })).toBeVisible();
+  await expect(page.getByLabel("Audio preview")).toBeVisible();
+  await page.getByRole("button", { name: "Transcribe audio", exact: true }).click();
+  const editor = page.getByRole("textbox", { name: "Transcript editor" });
+  await expect(editor).toHaveValue("Hello from the recording.\nA second line.");
+  await editor.fill("My edited transcript.\nAnother line.");
+  await expect(page.getByText("Edited locally · not saved")).toBeVisible();
+  await expect(page.getByText("5 words", { exact: false })).toBeVisible();
+  if (browserName === "chromium") {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.getByRole("button", { name: "Copy", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Copied" })).toBeVisible();
+    expect((await page.evaluate(() => navigator.clipboard.readText())).replace(/\r\n/g, "\n")).toBe("My edited transcript.\nAnother line.");
+  }
+  const waiting = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download TXT" }).click();
+  const downloaded = await waiting;
+  expect(downloaded.suggestedFilename()).toBe("meeting.txt");
+  const stream = await downloaded.createReadStream();
+  const pieces: Buffer[] = []; for await (const chunk of stream!) pieces.push(chunk);
+  expect(Buffer.concat(pieces).toString()).toBe("My edited transcript.\nAnother line.");
+  await page.getByRole("button", { name: "Remove audio file" }).click();
+  await expect(editor).toHaveValue("My edited transcript.\nAnother line.");
+  page.on("dialog", dialog => dialog.accept());
+  await page.getByRole("button", { name: "Clear transcript" }).click();
+  await expect(editor).toHaveValue("");
+  await page.getByRole("button", { name: "New transcription" }).click();
+  await expect(page.getByText("Your words will land here.")).toBeVisible();
+});
+test("rejects unsupported files and displays provider errors", async ({ page }) => {
+  await page.route("**/api/transcribe", route => route.fulfill({ status: 429, json: { success: false, error: { code: "QUOTA_EXCEEDED", message: "Your API quota has been exceeded." } } }));
+  await page.goto("/");
+  await page.getByLabel("Choose audio file").setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("not audio") });
+  await expect(page.getByRole("main").getByRole("alert")).toContainText("Choose an MP3");
+  await page.getByLabel("Choose audio file").setInputFiles({ name: "meeting.wav", mimeType: "audio/wav", buffer: wav() });
+  await page.getByText("Verbatim", { exact: true }).click();
+  await expect(page.getByRole("radio", { name: /Verbatim/ })).toBeChecked();
+  await page.getByRole("button", { name: "Transcribe audio", exact: true }).click();
+  await expect(page.getByRole("main").getByRole("alert")).toContainText("quota");
+  await expect(page.getByRole("button", { name: "Transcribe audio", exact: true })).toBeEnabled();
+});
+test("supports cancellation without replacing an existing result", async ({ page }) => {
+  await page.route("**/api/transcribe", async route => { await new Promise(resolve => setTimeout(resolve, 1500)); await route.fulfill({ json: { success: true, transcript: "Late response", model: settings.model } }).catch(() => {}); });
+  await page.goto("/");
+  await page.getByLabel("Choose audio file").setInputFiles({ name: "meeting.wav", mimeType: "audio/wav", buffer: wav() });
+  await page.getByRole("button", { name: "Transcribe audio", exact: true }).click();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByText("Request cancelled.", { exact: false })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Transcript editor" })).toHaveCount(0);
+});
