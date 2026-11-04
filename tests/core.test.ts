@@ -1,11 +1,8 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { randomBytes } from "node:crypto";
 import { validateAudio, sniffAudio } from "@/lib/audio-validation";
 import { downloadName, transcriptStats, normalizeTranscript } from "@/lib/file-utils";
-import { encryptAes, decryptAes, encryptCredential, decryptCredential } from "@/server/credentials/encryption";
-import { validateAudioContent } from "@/server/services/audio";
-import { apiRequest } from "@/lib/api-client";
-import { safeError } from "@/server/errors";
+import { validateAudioContent } from "@/lib/audio-content";
+import { safeError } from "@/lib/errors";
 import { wav } from "./fixtures";
 afterEach(() => vi.unstubAllGlobals());
 describe("audio validation", () => {
@@ -23,7 +20,7 @@ describe("audio validation", () => {
     await expect(validateAudioContent(new File([wav()], "renamed.mp3", { type: "audio/mpeg" }))).rejects.toThrow(/expected audio/);
     await expect(validateAudioContent(new File([Buffer.from("RIFF0000WAVEbad")], "bad.wav", { type: "audio/wav" }))).rejects.toThrow();
   });
-  it("rejects recordings beyond the server duration limit", async () => {
+  it("rejects recordings beyond the application duration limit", async () => {
     await expect(validateAudioContent(new File([wav(1801)], "long.wav", { type: "audio/wav" }))).rejects.toThrow(/30 minutes/);
   });
 });
@@ -39,32 +36,7 @@ describe("transcript utilities", () => {
     expect(transcriptStats("Hello world! 😀")).toEqual({ words: 2, characters: 14 });
   });
 });
-describe("credential protection", () => {
-  it("round trips authenticated encryption and rejects tampering and wrong keys", () => {
-    const key = randomBytes(32), encrypted = encryptAes("secret-test-value", key);
-    expect(encrypted).not.toContain("secret-test-value");
-    expect(decryptAes(encrypted, key)).toBe("secret-test-value");
-    expect(encryptAes("secret-test-value", key)).not.toBe(encrypted);
-    expect(() => decryptAes(encrypted, randomBytes(32))).toThrow();
-    const bytes = Buffer.from(encrypted, "base64"); bytes[30] ^= 1;
-    expect(() => decryptAes(bytes.toString("base64"), key)).toThrow();
-  });
-  it.skipIf(process.platform !== "win32")("round trips real Windows DPAPI", async () => {
-    const data = await encryptCredential("fake-test-credential");
-    expect(data.scheme).toBe("dpapi");
-    expect(data.value).not.toContain("fake-test-credential");
-    expect(await decryptCredential(data)).toBe("fake-test-credential");
-  });
-});
 describe("safe API responses", () => {
-  it("extracts data and reports safe errors", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ success: true, transcript: "Hi" })));
-    expect(await apiRequest("/api/transcribe")).toMatchObject({ transcript: "Hi" });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ success: false, error: { code: "QUOTA", message: "Try later." } }, { status: 429 })));
-    await expect(apiRequest("/api/transcribe")).rejects.toThrow("Try later.");
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("bad gateway", { status: 502 })));
-    await expect(apiRequest("/api/transcribe")).rejects.toThrow(/unreadable/);
-  });
   it("never returns upstream error text or credentials", () => {
     expect(safeError(new Error("private-key-in-upstream-error")).message).not.toContain("private-key");
     expect(safeError({ status: 429 }).code).toBe("QUOTA_EXCEEDED");

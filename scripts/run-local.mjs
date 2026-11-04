@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, cpSync, watch } from "node:fs";
+import { existsSync, readFileSync, cpSync, rmSync, watch } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -15,12 +15,16 @@ const commands = {
   start: ["next/dist/bin/next", "start", "--hostname", "127.0.0.1", "--port", process.env.PORT || "3100"],
   build: ["next/dist/bin/next", "build", "--webpack"],
   typecheck: ["typescript/bin/tsc", "--noEmit"],
+  lint: ["eslint/bin/eslint.js", "."],
   test: ["vitest/vitest.mjs", "run"],
   e2e: ["@playwright/test/cli.js", "test"],
 };
 if (!commands[mode]) throw new Error("Unknown local command");
-const inputs = ["src", "tests", "scripts", "public", "next.config.ts", "tsconfig.json", "postcss.config.mjs", "vitest.config.ts", "playwright.config.ts", "next-env.d.ts", "package.json", "package-lock.json", ".env.local", ".env.example", "README.md"];
+const inputs = ["src", "tests", "scripts", "public", "eslint.config.mjs", "vercel.json", "next.config.ts", "tsconfig.json", "postcss.config.mjs", "vitest.config.ts", "playwright.config.ts", "next-env.d.ts", "package.json", "package-lock.json", ".env.local", ".env.example", "README.md"];
 function sync() {
+  // Prune only retired application files from the private mirror, never user data.
+  const retired = ["src/app/api/settings/route.ts", "src/app/api/settings/test-connection/route.ts", "src/app/api/transcribe/route.ts", "src/server/http.ts", "src/server/errors.ts", "src/server/network.ts", "src/server/credentials/credential-store.ts", "src/server/credentials/encryption.ts", "src/server/services/audio.ts", "src/server/services/transcription-service.ts", "src/lib/api-client.ts", "tests/api.test.ts", "tests/server-only.ts"];
+  for (const name of retired) rmSync(join(runtime, name), { force: true });
   for (const name of inputs) if (existsSync(join(source, name))) cpSync(join(source, name), join(runtime, name), { recursive: true, force: true });
 }
 const watchers = [];
