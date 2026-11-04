@@ -1,18 +1,20 @@
 "use client";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { ArrowDownToLine, ArrowRight, AudioLines, Check, CheckCircle2, ChevronRight, Copy, FileAudio2, FileText, Globe2, Headphones, Loader2, Plus, Settings2, ShieldCheck, Sparkles, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { AUDIO_ACCEPT, MAX_DURATION_SECONDS, MODEL, type TranscriptionMode } from "@/config/constants";
-import { apiRequest } from "@/lib/api-client";
+import { AUDIO_ACCEPT, MAX_DURATION_SECONDS, type TranscriptionMode } from "@/config/constants";
+import { useCredentials } from "@/hooks/use-credentials";
+import { safeError } from "@/lib/errors";
 import { validateAudio } from "@/lib/audio-validation";
 import { downloadName, formatBytes, formatDuration, transcriptStats } from "@/lib/file-utils";
-import type { Settings } from "@/types/api";
 const SettingsDialog = dynamic(() => import("@/components/settings/settings-dialog"), { ssr: false });
 
 export function Workspace() {
-  const [settings, setSettings] = useState<Settings>({ configured: false, status: "not_configured", model: MODEL });
+  const credentials = useCredentials();
+  const { settings } = credentials;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [audioUrl, setAudioUrl] = useState("");
@@ -32,7 +34,7 @@ export function Workspace() {
   const request = useRef<AbortController | null>(null);
   const reduceMotion = useReducedMotion();
   const stats = transcriptStats(transcript);
-  useEffect(() => { void apiRequest<Settings>("/api/settings").then(setSettings).catch(e => setError(e.message)); return () => request.current?.abort(); }, []);
+  useEffect(() => () => request.current?.abort(), []);
   useEffect(() => {
     if (!file) { setAudioUrl(""); return; }
     const url = URL.createObjectURL(file); setAudioUrl(url);
@@ -56,16 +58,16 @@ export function Workspace() {
     setBusy(true); setError(""); setNotice("");
     const controller = new AbortController(); request.current = controller;
     const timeout = setTimeout(() => controller.abort("timeout"), 11 * 60 * 1000);
-    const form = new FormData(); form.append("audio", file); form.append("mode", mode);
     try {
-      const result = await apiRequest<{ transcript: string }>("/api/transcribe", { method: "POST", body: form, signal: controller.signal });
+      const { transcribeAudio } = await import("@/lib/gemini");
+      const text = await transcribeAudio(file, mode, controller.signal);
       if (controller.signal.aborted) return;
-      setTranscript(result.transcript); setOriginal(result.transcript); setResultName(file.name); setHasResult(true); setCopied(false);
+      setTranscript(text); setOriginal(text); setResultName(file.name); setHasResult(true); setCopied(false);
       setNotice("Your transcript is ready. Review and edit it below.");
       setTimeout(() => editor.current?.focus(), 100);
     } catch (e) {
       if (controller.signal.aborted) setNotice(controller.signal.reason === "timeout" ? "This request timed out. Try a shorter recording." : "Request cancelled. Google may finish a request already received.");
-      else setError(e instanceof Error ? e.message : "Unable to transcribe this recording.");
+      else setError(safeError(e).message);
     } finally { clearTimeout(timeout); request.current = null; setBusy(false); }
   }
   async function copy() {
@@ -82,7 +84,7 @@ export function Workspace() {
   return <>
     <a href="#workspace" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:bg-white focus:p-4">Skip to workspace</a>
     <header className="border-b border-border bg-white/70"><nav aria-label="Main navigation" className="mx-auto flex h-20 max-w-6xl items-center justify-between px-5 sm:px-10">
-      <a href="/" className="flex items-center gap-2.5 text-xl font-semibold tracking-[-0.7px]" aria-label="AudioText home"><span className="flex size-9 items-center justify-center rounded-xl bg-primary text-white"><AudioLines size={21} /></span>AudioText<span className="ml-1 rounded border border-border px-1.5 py-0.5 text-[9px] font-medium tracking-widest text-muted-foreground">LOCAL</span></a>
+      <Link href="/" className="flex items-center gap-2.5 text-xl font-semibold tracking-[-0.7px]" aria-label="AudioText home"><span className="flex size-9 items-center justify-center rounded-xl bg-primary text-white"><AudioLines size={21} /></span>AudioText<span className="ml-1 rounded border border-border px-1.5 py-0.5 text-[9px] font-medium tracking-widest text-muted-foreground">BYOK</span></Link>
       <div className="flex items-center gap-5 sm:gap-8"><a href="#workspace" className="hidden border-b-2 border-primary py-7 text-sm font-medium sm:block">Workspace</a><span className="hidden items-center gap-2 text-xs text-muted-foreground md:flex"><span className={`size-1.5 rounded-full ${settings.status === "connected" ? "bg-emerald-600" : "bg-stone-400"}`} />{settings.status === "connected" ? "API connected" : settings.configured ? "API key saved" : "Connect your API key"}</span><Button variant="ghost" size="sm" onClick={() => setSettingsOpen(true)}><Settings2 />Settings</Button></div>
     </nav></header>
     <main id="workspace" className="mx-auto max-w-[1080px] px-5 pb-14 pt-12 sm:px-10 sm:pt-16">
@@ -100,7 +102,7 @@ export function Workspace() {
             <Button variant="outline" size="sm" className="mt-4 bg-white" onClick={() => input.current?.click()}>Browse files<Plus size={14} /></Button>
             <p className="mt-4 text-[10px] tracking-wide text-muted-foreground">MP3, WAV, M4A, FLAC, OGG, WebM <span className="mx-1">·</span> Up to 50 MB / 30 min</p>
           </div> : <div className="rounded-xl border border-border bg-background p-5 sm:p-6"><div className="mb-5 flex items-center gap-3"><div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/8 text-primary"><FileAudio2 size={22} /></div><div className="min-w-0 flex-1"><h2 className="truncate text-sm font-medium">{file.name}</h2><p className="mt-1 text-xs text-muted-foreground">{formatBytes(file.size)}{duration !== null && ` · ${formatDuration(duration)}`} · Ready to transcribe</p></div><Button disabled={busy} variant="ghost" size="icon" aria-label="Remove audio file" onClick={() => { setFile(null); setDuration(null); setError(""); }}><X /></Button></div>
-            {audioUrl && <audio key={audioUrl} controls preload="metadata" src={audioUrl} aria-label="Audio preview" onLoadedMetadata={e => { const seconds = e.currentTarget.duration; if (Number.isFinite(seconds)) { setDuration(seconds); if (seconds > MAX_DURATION_SECONDS) setError("This recording is longer than 30 minutes. Trim it before uploading."); } }} onError={() => setNotice("Your browser cannot preview this format. The server will validate the audio before transcription.")} />}
+            {audioUrl && <audio key={audioUrl} controls preload="metadata" src={audioUrl} aria-label="Audio preview" onLoadedMetadata={e => { const seconds = e.currentTarget.duration; if (Number.isFinite(seconds)) { setDuration(seconds); if (seconds > MAX_DURATION_SECONDS) setError("This recording is longer than 30 minutes. Trim it before uploading."); } }} onError={() => setNotice("Your browser cannot preview this format. AudioText will validate the audio before uploading.")} />}
           </div>}
           <input ref={input} type="file" accept={AUDIO_ACCEPT} aria-label="Choose audio file" className="sr-only" tabIndex={-1} onChange={e => { if (e.target.files) selectFile(e.target.files); e.target.value = ""; }} />
           <div className="mt-6 grid gap-6 sm:grid-cols-[1.25fr_1fr]">
@@ -108,9 +110,10 @@ export function Workspace() {
             <div><p className="mb-2.5 text-xs font-medium">Recording language</p><div className="flex h-[74px] items-center gap-3 rounded-lg border border-border px-4"><Globe2 size={17} className="text-muted-foreground" /><div><p className="text-xs font-medium">Detect automatically</p><p className="mt-1.5 text-[10px] text-muted-foreground">Your words, in their original language</p></div></div></div>
           </div>
         </div>
-        <div className="flex flex-col gap-4 border-t border-border bg-[#fdfdfc] px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-7"><p className="flex items-center gap-2 text-[11px] text-muted-foreground"><ShieldCheck size={15} />No recording or transcript saved by AudioText.</p><Button className="sm:min-w-48" disabled={busy || !file || !settings.configured || (duration !== null && duration > MAX_DURATION_SECONDS)} onClick={() => void start()}>{busy ? <><Loader2 className="animate-spin" />Transcribing…</> : <>Transcribe audio<ArrowRight /></>}</Button></div>
+        <div className="flex flex-col gap-4 border-t border-border bg-[#fdfdfc] px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-7"><p className="flex items-center gap-2 text-[11px] text-muted-foreground"><ShieldCheck size={15} />No recording or transcript saved by AudioText.</p><Button className="sm:min-w-48" disabled={busy || credentials.loading || !file || !settings.configured || (duration !== null && duration > MAX_DURATION_SECONDS)} onClick={() => void start()}>{busy ? <><Loader2 className="animate-spin" />Transcribing…</> : <>Transcribe audio<ArrowRight /></>}</Button></div>
       </section>
-      {!settings.configured && <button onClick={() => setSettingsOpen(true)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg px-2 py-2 text-xs text-muted-foreground"><span className="text-primary">First time here?</span> Add your Gemini API key to get started.<ChevronRight size={13} /></button>}
+      {credentials.error && <div role="alert" className="mt-4 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{credentials.error}<Button variant="ghost" size="sm" onClick={() => void credentials.refresh()} disabled={credentials.loading}>Retry storage</Button></div>}
+      {!credentials.loading && !settings.configured && <button onClick={() => setSettingsOpen(true)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg px-2 py-2 text-xs text-muted-foreground"><span className="text-primary">First time here?</span> Add your Gemini API key to get started.<ChevronRight size={13} /></button>}
       {busy && <div role="status" className="mt-4 flex items-center gap-3 rounded-xl border border-primary/20 bg-primary/5 p-4 text-sm"><Loader2 className="size-4 animate-spin text-primary" /><div className="flex-1"><p>Turning your recording into words…</p><p className="mt-1 text-xs text-muted-foreground">Uploading and transcribing. Longer recordings can take a few minutes.</p></div><Button variant="ghost" size="sm" onClick={() => request.current?.abort()}>Cancel</Button></div>}
       {error && <div role="alert" className="mt-4 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"><p className="flex-1">{error}</p><button aria-label="Dismiss error" onClick={() => setError("")}><X size={16} /></button></div>}
       {notice && <p role="status" className="mt-4 text-center text-xs leading-6 text-muted-foreground">{notice}</p>}
@@ -121,7 +124,7 @@ export function Workspace() {
       </section>
       <div className="mt-8 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 text-[11px] text-muted-foreground"><span className="flex items-center gap-2"><Headphones size={14} />Made for real conversations</span><span className="flex items-center gap-2"><Globe2 size={14} />Automatic language detection</span><span className="flex items-center gap-2"><FileText size={14} />Your text, your way</span></div>
     </main>
-    <footer className="mx-auto flex max-w-[1000px] flex-wrap items-center justify-between gap-3 border-t border-border px-5 py-6 text-[10px] text-muted-foreground"><span>AudioText <span className="mx-2">/</span> A clearer way from voice to text.</span><span>Powered by Gemini <span className="mx-2">·</span> Stored locally. Processed by Google.</span></footer>
-    {settingsOpen && <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} settings={settings} onSettings={setSettings} />}
+    <footer className="mx-auto flex max-w-[1000px] flex-wrap items-center justify-between gap-3 border-t border-border px-5 py-6 text-[10px] text-muted-foreground"><span>AudioText <span className="mx-2">/</span> A clearer way from voice to text.</span><span>Powered by Gemini <span className="mx-2">·</span> Key saved in your browser. Audio sent to Google.</span></footer>
+    {settingsOpen && <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} credentials={credentials} />}
   </>;
 }

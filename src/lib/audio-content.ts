@@ -1,8 +1,7 @@
-import "server-only";
 import { parseBuffer } from "music-metadata";
 import { validateAudio, sniffAudio } from "@/lib/audio-validation";
 import { MAX_DURATION_SECONDS } from "@/config/constants";
-import { AppError } from "@/server/errors";
+import { AppError } from "@/lib/errors";
 export async function validateAudioContent(file: File) {
   const error = validateAudio(file);
   if (error) throw new AppError("INVALID_AUDIO", error);

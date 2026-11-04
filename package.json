@@ -4,12 +4,17 @@
   "private": true,
   "scripts": {
     "dev": "node scripts/run-local.mjs dev",
-    "build": "node scripts/run-local.mjs build",
-    "start": "node scripts/run-local.mjs start",
-    "typecheck": "node scripts/run-local.mjs typecheck",
-    "test": "node scripts/run-local.mjs test",
-    "test:e2e": "node scripts/run-local.mjs e2e",
-    "check": "npm run typecheck && npm test"
+    "build": "next build --webpack",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "build:local": "node scripts/run-local.mjs build",
+    "start:local": "node scripts/run-local.mjs start",
+    "check:local": "node scripts/run-local.mjs typecheck",
+    "test:local": "node scripts/run-local.mjs test",
+    "check": "npm run lint && npm run typecheck && npm test"
   },
   "dependencies": {
     "@fontsource/geist": "^5.3.0",
@@ -24,9 +29,7 @@
     "next": "^16.4.4",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "server-only": "^0.0.1",
-    "tailwind-merge": "^3.7.0",
-    "zod": "^4.6.7"
+    "tailwind-merge": "^3.7.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
@@ -35,7 +38,10 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "tailwindcss": "^4.3.3",
-    "typescript": "^7.0.2",
-    "vitest": "^5.1.0"
+    "typescript": "~6.0.3",
+    "vitest": "^5.1.0",
+    "eslint": "^9.39.1",
+    "eslint-config-next": "16.4.4",
+    "fake-indexeddb": "^6.2.4"
   }
 }
